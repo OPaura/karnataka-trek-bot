@@ -326,8 +326,32 @@ class AranyaTelegramBot:
                 logger.error(f"Unexpected error in polling loop: {e}")
                 time.sleep(3)
 
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b"Karnataka Trek Bot is running!")
+
+    def log_message(self, format, *args):
+        pass  # Suppress health check access logs
+
+DEFAULT_BOT_TOKEN = "9161707501:AAH3q9nvQo84cSnzZ1g4XWJCxQc4lZmjqfY"
+
+def start_health_check_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    server.serve_forever()
+
 if __name__ == "__main__":
-    # Check for BOT_TOKEN in environment, .env file, or prompt
+    # Start background HTTP health check server for Render free tier
+    health_thread = threading.Thread(target=start_health_check_server, daemon=True)
+    health_thread.start()
+
+    # Check for BOT_TOKEN in environment, .env file, or fallback
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
 
     env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -339,21 +363,8 @@ if __name__ == "__main__":
                     break
 
     if not token or token == "YOUR_BOT_TOKEN_HERE":
-
-        print("\n" + "="*60)
-        print("⚠️  TELEGRAM_BOT_TOKEN not found in environment!")
-        print("="*60)
-        print("To start your Telegram Bot:")
-        print("1. Open Telegram and search for @BotFather")
-        print("2. Send /newbot, give it a name and username")
-        print("3. Copy the HTTP API token provided by BotFather")
-        print("="*60)
-        user_token = input("Enter your Telegram Bot Token: ").strip()
-        if user_token:
-            token = user_token
-        else:
-            print("No token provided. Exiting.")
-            sys.exit(1)
+        token = DEFAULT_BOT_TOKEN
 
     bot = AranyaTelegramBot(token)
     bot.run()
+
