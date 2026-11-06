@@ -248,10 +248,21 @@ class AranyaTelegramBot:
             self.send_message(chat_id, f"🔍 <i>Checking Aranya Vihaara for <b>{trek['name']}</b> on <b>{date_str}</b>...</i>")
             self.send_chat_action(chat_id, "typing")
             
-            result = self.tracker.check_availability(trek["district_id"], trek["id"], date_str)
-            resp_text, markup = self.format_availability_response(trek, date_str, result)
-            self.send_message(chat_id, resp_text, reply_markup=markup)
+            try:
+                result = self.tracker.check_availability(trek["district_id"], trek["id"], date_str)
+                resp_text, markup = self.format_availability_response(trek, date_str, result)
+                self.send_message(chat_id, resp_text, reply_markup=markup)
+            except Exception as e:
+                logger.error(f"Error checking availability: {e}")
+                err_msg = (
+                    f"⚠️ <b>Could not connect to Aranya Vihaara portal right now.</b>\n\n"
+                    f"Error: <code>{type(e).__name__}: {str(e)}</code>\n\n"
+                    f"The government server is either busy or timing out. Please retry in a moment, "
+                    f"or check directly at: <a href='https://aranyavihaara.karnataka.gov.in/'>aranyavihaara.karnataka.gov.in</a>"
+                )
+                self.send_message(chat_id, err_msg)
             return
+
 
         # Case B: Trek detected, but date missing
         if trek and not date_str:
@@ -331,10 +342,25 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        if self.path == "/test":
+            try:
+                tracker = AranyaVihaaraTracker()
+                res = tracker.check_availability(17, 112, "22-11-2026")
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(res).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-type', 'text/plain')
+                self.end_headers()
+                self.wfile.write(f"Portal check failed from Render: {type(e).__name__}: {e}".encode('utf-8'))
+            return
         self.send_response(200)
         self.send_header('Content-type', 'text/plain')
         self.end_headers()
         self.wfile.write(b"Karnataka Trek Bot is running!")
+
 
     def log_message(self, format, *args):
         pass  # Suppress health check access logs
