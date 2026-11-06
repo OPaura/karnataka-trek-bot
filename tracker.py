@@ -67,7 +67,7 @@ class AranyaVihaaraTracker:
         """Initializes CSRF token and session cookies if not present."""
         if not self.csrf_token:
             req = urllib.request.Request(self.BASE_URL)
-            res = self.opener.open(req)
+            res = self.opener.open(req, timeout=10)
             html = res.read().decode('utf-8', errors='ignore')
             token_match = re.search(r'name="_token"\s+value="([^"]+)"', html)
             if token_match:
@@ -88,9 +88,10 @@ class AranyaVihaaraTracker:
             data=data,
             headers={'X-Requested-With': 'XMLHttpRequest', 'Referer': self.BASE_URL}
         )
-        res = self.opener.open(req)
+        res = self.opener.open(req, timeout=10)
         json_resp = json.loads(res.read().decode('utf-8'))
         return json_resp.get('blockedDates', [])
+
 
     def check_availability(self, district_id, trek_id, check_in_dd_mm_yyyy):
         """
@@ -150,7 +151,7 @@ class AranyaVihaaraTracker:
         )
 
         try:
-            res = self.opener.open(req)
+            res = self.opener.open(req, timeout=10)
             html = res.read().decode('utf-8', errors='ignore')
         except Exception as e:
             # If session expired, re-init and retry once
@@ -163,8 +164,9 @@ class AranyaVihaaraTracker:
                 'check_in': check_in_dd_mm_yyyy
             }).encode('utf-8')
             req = urllib.request.Request(f"{self.BASE_URL}/availability", data=data, headers={'Referer': self.BASE_URL})
-            res = self.opener.open(req)
+            res = self.opener.open(req, timeout=10)
             html = res.read().decode('utf-8', errors='ignore')
+
 
         # 4. Parse slot cards
         slots = []
