@@ -5,9 +5,20 @@ import ssl
 import re
 import json
 import logging
+import os
+import socket
 from datetime import datetime
 
 logger = logging.getLogger("AranyaTracker")
+
+# Force IPv4 resolution to prevent timeouts on unroutable NAT64 IPv6 (64:ff9b::)
+_orig_getaddrinfo = socket.getaddrinfo
+def _forced_ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    if host and "aranyavihaara" in host:
+        family = socket.AF_INET
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+socket.getaddrinfo = _forced_ipv4_getaddrinfo
+
 
 class AranyaVihaaraTracker:
     BASE_URL = "https://aranyavihaara.karnataka.gov.in"
@@ -52,10 +63,17 @@ class AranyaVihaaraTracker:
         self.ctx.verify_mode = ssl.CERT_NONE
 
         self.cj = http.cookiejar.CookieJar()
-        self.opener = urllib.request.build_opener(
+        handlers = [
             urllib.request.HTTPSHandler(context=self.ctx),
             urllib.request.HTTPCookieProcessor(self.cj)
-        )
+        ]
+        proxy = os.environ.get("INDIAN_PROXY")
+        if proxy:
+            handlers.append(urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
+            logger.info(f"Using proxy: {proxy}")
+
+        self.opener = urllib.request.build_opener(*handlers)
+
         self.opener.addheaders = [
             ('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'),
             ('Accept-Language', 'en-US,en;q=0.9'),
