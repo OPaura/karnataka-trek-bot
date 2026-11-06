@@ -1,14 +1,12 @@
-import urllib.request
-import urllib.parse
-import http.cookiejar
-import ssl
-import re
-import json
-import logging
 import os
+import re
 import socket
+import logging
 from datetime import datetime
+import requests
+import urllib3
 
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger("AranyaTracker")
 
 # Force IPv4 resolution to prevent timeouts on unroutable NAT64 IPv6 (64:ff9b::)
@@ -18,6 +16,9 @@ def _forced_ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
         family = socket.AF_INET
     return _orig_getaddrinfo(host, port, family, type, proto, flags)
 socket.getaddrinfo = _forced_ipv4_getaddrinfo
+
+# Ensure all socket operations have a hard 15-second timeout so it never hangs
+socket.setdefaulttimeout(15)
 
 
 class AranyaVihaaraTracker:
@@ -57,37 +58,35 @@ class AranyaVihaaraTracker:
     }
 
     def __init__(self):
-        # Ignore SSL revocation and certificate issues common on NIC / state portals
-        self.ctx = ssl.create_default_context()
-        self.ctx.check_hostname = False
-        self.ctx.verify_mode = ssl.CERT_NONE
+        self.session = requests.Session()
+        self.session.verify = False
 
-        self.cj = http.cookiejar.CookieJar()
-        handlers = [
-            urllib.request.HTTPSHandler(context=self.ctx),
-            urllib.request.HTTPCookieProcessor(self.cj)
-        ]
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
+        })
+
+        # Proxy support: ScraperAPI Indian proxy or custom Indian proxy
         proxy = os.environ.get("INDIAN_PROXY")
+        scraper_key = os.environ.get("SCRAPERAPI_KEY")
+        if scraper_key:
+            proxy = f"http://scraperapi.country_code=in:{scraper_key}@proxy-server.scraperapi.com:8001"
+
         if proxy:
-            handlers.append(urllib.request.ProxyHandler({'http': proxy, 'https': proxy}))
-            logger.info(f"Using proxy: {proxy}")
+            self.session.proxies = {
+                'http': proxy,
+                'https': proxy
+            }
+            logger.info("Configured Indian proxy / ScraperAPI route.")
 
-        self.opener = urllib.request.build_opener(*handlers)
-
-        self.opener.addheaders = [
-            ('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'),
-            ('Accept-Language', 'en-US,en;q=0.9'),
-            ('Accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8')
-        ]
         self.csrf_token = None
 
     def _ensure_session(self):
         """Initializes CSRF token and session cookies if not present."""
         if not self.csrf_token:
-            req = urllib.request.Request(self.BASE_URL)
-            res = self.opener.open(req, timeout=10)
-            html = res.read().decode('utf-8', errors='ignore')
-            token_match = re.search(r'name="_token"\s+value="([^"]+)"', html)
+            resp = self.session.get(self.BASE_URL, timeout=12)
+            token_match = re.search(r'name="_token"\s+value="([^"]+)"', resp.text)
             if token_match:
                 self.csrf_token = token_match.group(1)
             else:
@@ -96,20 +95,15 @@ class AranyaVihaaraTracker:
     def get_blocked_dates(self, district_id, trek_id):
         """Fetches dates that are blocked or closed for booking."""
         self._ensure_session()
-        data = urllib.parse.urlencode({
+        data = {
             '_token': self.csrf_token,
             'district_id': district_id,
             'trek_id': trek_id
-        }).encode('utf-8')
-        req = urllib.request.Request(
-            f"{self.BASE_URL}/get-blocked-dates",
-            data=data,
-            headers={'X-Requested-With': 'XMLHttpRequest', 'Referer': self.BASE_URL}
-        )
-        res = self.opener.open(req, timeout=10)
-        json_resp = json.loads(res.read().decode('utf-8'))
+        }
+        headers = {'X-Requested-With': 'XMLHttpRequest', 'Referer': self.BASE_URL}
+        resp = self.session.post(f"{self.BASE_URL}/get-blocked-dates", data=data, headers=headers, timeout=12)
+        json_resp = resp.json()
         return json_resp.get('blockedDates', [])
-
 
     def check_availability(self, district_id, trek_id, check_in_dd_mm_yyyy):
         """
@@ -155,36 +149,24 @@ class AranyaVihaaraTracker:
             pass
 
         # 3. Post to /availability endpoint
-        data = urllib.parse.urlencode({
+        data = {
             '_token': self.csrf_token,
             'district': str(district_id),
             'trek': str(trek_id),
             'check_in': check_in_dd_mm_yyyy
-        }).encode('utf-8')
-
-        req = urllib.request.Request(
-            f"{self.BASE_URL}/availability",
-            data=data,
-            headers={'Referer': self.BASE_URL}
-        )
+        }
+        headers = {'Referer': self.BASE_URL}
 
         try:
-            res = self.opener.open(req, timeout=10)
-            html = res.read().decode('utf-8', errors='ignore')
-        except Exception as e:
-            # If session expired, re-init and retry once
+            resp = self.session.post(f"{self.BASE_URL}/availability", data=data, headers=headers, timeout=12)
+            html = resp.text
+        except Exception:
+            # If session expired or timed out, re-init and retry once
             self.csrf_token = None
             self._ensure_session()
-            data = urllib.parse.urlencode({
-                '_token': self.csrf_token,
-                'district': str(district_id),
-                'trek': str(trek_id),
-                'check_in': check_in_dd_mm_yyyy
-            }).encode('utf-8')
-            req = urllib.request.Request(f"{self.BASE_URL}/availability", data=data, headers={'Referer': self.BASE_URL})
-            res = self.opener.open(req, timeout=10)
-            html = res.read().decode('utf-8', errors='ignore')
-
+            data['_token'] = self.csrf_token
+            resp = self.session.post(f"{self.BASE_URL}/availability", data=data, headers=headers, timeout=12)
+            html = resp.text
 
         # 4. Parse slot cards
         slots = []
